@@ -1,3 +1,15 @@
 build/
-.continue/
-.codex
+*.o
+*.obj
+*.a
+*.so
+*.exe
+core
+core.*
+*.zst
+.opencode/.cache/
+.opencode/.tmp/
+*.sublime-*
+.vscode/
+.idea/
+compile_commands.json
