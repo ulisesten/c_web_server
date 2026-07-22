@@ -6,13 +6,28 @@
 #include "request.h"
 #include "response.h"
 
-typedef void (*cws_handler_t)(cws_request_t* req, cws_response_t* res);
-typedef int  (*cws_middleware_t)(cws_request_t* req, cws_response_t* res, cws_handler_t next);
+#include "request.h"
+#include "response.h"
+#include "middleware.h"
 
 typedef struct cws_router cws_router_t;
 
 cws_router_t* cws_router_new(void);
 void          cws_router_free(cws_router_t* router);
+
+/* Attach a global middleware to be executed before every route in this
+ * router. Stable order = registration order. Capped at CWS_MAX_PIPELINE.
+ */
+int  cws_router_use(cws_router_t* router, cws_middleware_fn middleware);
+
+/*
+ * Mount another router under a path prefix. Requests matching the prefix
+ * are dispatched to the sub-router; route params captured on the prefix
+ * are preserved in req->path_params. The prefix can contain :params
+ * (e.g.  /api/:version ). Trailing slash on prefix is ignored.
+ */
+int  cws_router_mount(cws_router_t* router, const char* prefix,
+                     cws_router_t* sub_router);
 
 /*
  * Register a route. Supported patterns:

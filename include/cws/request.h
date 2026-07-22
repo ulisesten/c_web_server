@@ -52,6 +52,15 @@ typedef struct {
     cws_query_kv_t  path_params[16];
     size_t          path_params_count;
     int             worker_idx;     /* filled by worker before handler */
+
+    /*
+     * Opaque slots for middleware/handlers. The framework uses __next_ctx
+     * internally during pipeline execution; NEVER touch it from user code.
+     * Applications/middlewares may store typed state in __user (with the
+     * prefix-key convention appropriate to the middleware).
+     */
+    void*           __next_ctx;
+    void*           __user;
 } cws_request_t;
 
 #define CWS_MAX_HEADERS     (64)

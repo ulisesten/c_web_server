@@ -14,6 +14,19 @@ typedef struct cws_route_node {
     int                   is_wildcard;     /* segment == "*"         */
     cws_method_t          method;          /* 0 if no handler at this node */
     cws_handler_t         handler;
+
+    /* Per-router middleware stack at THIS node (empty for non-root nodes
+     * unless explicitly mounted). The root node carries the router's
+     * global middleware. Sub-router mount points store the sub-router's
+     * root node mws + the sub-router subtree.
+     */
+    cws_middleware_fn     mws[CWS_MAX_PIPELINE];
+    int                   mws_count;
+
+    /* Sub-router mount: if non-NULL, requests reaching this node with a
+     * longer path are delegated to sub_router. */
+    cws_router_t*          sub_router;
+
     struct cws_route_node* children;
     int                   children_count;
     int                   children_cap;
