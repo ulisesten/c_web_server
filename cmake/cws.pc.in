@@ -1,0 +1,12 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: cws
+Description: High-performance HTTP/1.1 server library in C tuned for Xeon/EPYC
+URL: https://github.com/anomalyco/c_web_server
+Version: 0.1.0
+Libs: -L${libdir} -lcws
+Libs.private: -lpthread
+Cflags: -I${includedir}

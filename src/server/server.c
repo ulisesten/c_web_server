@@ -58,6 +58,8 @@ struct cws_server {
     cws_worker_t*       workers;
     _Atomic int         running;
     _Atomic int         stop;
+    pthread_t           acceptor_thread;
+    int                 acceptor_started;
     cws_ready_cb        on_ready;
     void*               ready_user;
 };
@@ -66,13 +68,6 @@ static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
-}
-
-static int set_nonblock(int fd) {
-    int fl = fcntl(fd, F_GETFL, 0);
-    if (fl < 0) return -1;
-    if (fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) return -1;
-    return 0;
 }
 
 static int make_listen_socket(const cws_config_t* cfg) {
@@ -320,7 +315,7 @@ void cws_server_free(cws_server_t* srv) {
     if (srv->placement) cws_cpu_placement_free(srv->placement);
     if (srv->listen_fd >= 0) close(srv->listen_fd);
     cws_cpu_topology_free(&srv->topo);
-    cws_router_free(srv->router);
+    /* Router is owned by the caller, not by the server. */
     free(srv);
 }
 
@@ -334,7 +329,31 @@ static void dummy_ready(const cws_server_t* srv, int err, void* user) {
     (void)srv; (void)user;
     dummy_ready_called = err;
 }
-int cws_server_run(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
+static void* acceptor_loop(void* arg) {
+    cws_server_t* srv = arg;
+    static _Atomic int rr = 0;
+    while (!atomic_load(&srv->stop)) {
+        int cfd = accept4(srv->listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (cfd < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct timespec ts = { 0, 1000 * 1000 };
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            cws_log_error("accept4: %s", strerror(errno));
+            continue;
+        }
+        apply_conn_sockopts(cfd, &srv->cfg);
+
+        int wi = atomic_fetch_add(&rr, 1) % srv->n_workers;
+        cws_worker_t* w = &srv->workers[wi];
+        if (setup_conn(w, cfd) != CWS_OK) { close(cfd); continue; }
+    }
+    return NULL;
+}
+
+static int server_start(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
     if (!srv || srv->cfg.n_workers < 1) return CWS_ERR_INVALID;
     if (!on_ready) on_ready = dummy_ready;
     srv->on_ready = on_ready;
@@ -374,14 +393,7 @@ int cws_server_run(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
             on_ready(srv, CWS_ERR_NOMEM, user);
             return CWS_ERR_NOMEM;
         }
-
-        int reuse = srv->cfg.reuse_port;
-        if (reuse) {
-            w->accept_sock = dup(srv->listen_fd);
-            set_nonblock(w->accept_sock);
-        } else {
-            w->accept_sock = -1;
-        }
+        w->accept_sock = -1;
     }
 
     on_ready(srv, CWS_OK, user);
@@ -390,31 +402,49 @@ int cws_server_run(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
     for (int i = 0; i < srv->n_workers; i++) {
         pthread_create(&srv->workers[i].thread, NULL, worker_main, &srv->workers[i]);
     }
+    return CWS_OK;
+}
 
-    static _Atomic int rr = 0;
-    while (!atomic_load(&srv->stop)) {
-        int cfd = accept4(srv->listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
-        if (cfd < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct timespec ts = { 0, 1000 * 1000 };
-                nanosleep(&ts, NULL);
-                continue;
-            }
-            cws_log_error("accept4: %s", strerror(errno));
-            continue;
-        }
-        apply_conn_sockopts(cfd, &srv->cfg);
-
-        int wi = atomic_fetch_add(&rr, 1) % srv->n_workers;
-        cws_worker_t* w = &srv->workers[wi];
-        if (setup_conn(w, cfd) != CWS_OK) { close(cfd); continue; }
+static int server_drain_and_join(cws_server_t* srv) {
+    if (srv->acceptor_started) {
+        pthread_join(srv->acceptor_thread, NULL);
+        srv->acceptor_started = 0;
     }
-
-    for (int i = 0; i < srv->n_workers; i++) pthread_join(srv->workers[i].thread, NULL);
-
+    for (int i = 0; i < srv->n_workers; i++) {
+        if (srv->workers && srv->workers[i].conns) {
+            pthread_join(srv->workers[i].thread, NULL);
+        }
+    }
     atomic_store(&srv->running, 0);
     return CWS_OK;
+}
+
+int cws_server_run(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
+    int rc = server_start(srv, on_ready, user);
+    if (rc != CWS_OK) return rc;
+
+    acceptor_loop(srv);
+
+    return server_drain_and_join(srv);
+}
+
+int cws_server_run_async(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
+    int rc = server_start(srv, on_ready, user);
+    if (rc != CWS_OK) return rc;
+
+    if (pthread_create(&srv->acceptor_thread, NULL, acceptor_loop, srv) != 0) {
+        cws_log_error("pthread_create acceptor: %s", strerror(errno));
+        atomic_store(&srv->stop, 1);
+        server_drain_and_join(srv);
+        return CWS_ERR_GENERIC;
+    }
+    srv->acceptor_started = 1;
+    return CWS_OK;
+}
+
+int cws_server_wait(cws_server_t* srv) {
+    if (!srv) return CWS_ERR_INVALID;
+    return server_drain_and_join(srv);
 }
 
 int cws_server_stop(cws_server_t* srv) {

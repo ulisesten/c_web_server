@@ -35,6 +35,10 @@ typedef struct {
     /* Static files */
     char      static_dir[256];
 
+    /* TLS (reserved for future phases; cws_app_tls stores them here) */
+    char      tls_cert[256];
+    char      tls_key[256];
+
     /* Logging */
     int       log_level;         /* cws_log_level_t cast                            */
     char      log_file[256];     /* empty -> stderr                                  */

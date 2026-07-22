@@ -13,5 +13,6 @@
 #include "parser.h"
 #include "route.h"
 #include "server.h"
+#include "app.h"
 
 #endif
