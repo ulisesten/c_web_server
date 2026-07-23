@@ -84,9 +84,19 @@ cws_router_t* cws_router_new(void) {
 
 void cws_router_free(cws_router_t* router) {
     if (!router) return;
+    /* We do NOT free sub_routers: they're owned by the caller (cws_app
+     * or whoever created them). */
     node_free(router->root);
     free(router->root);
     free(router);
+}
+
+int cws_router_use(cws_router_t* router, cws_middleware_fn middleware) {
+    if (!router || !middleware) return CWS_ERR_INVALID;
+    cws_route_node_t* root = router->root;
+    if (root->mws_count >= CWS_MAX_PIPELINE) return CWS_ERR_OVERFLOW;
+    root->mws[root->mws_count++] = middleware;
+    return CWS_OK;
 }
 
 int cws_router_add(cws_router_t* router, cws_method_t method,
@@ -123,14 +133,47 @@ int cws_router_add(cws_router_t* router, cws_method_t method,
     return CWS_OK;
 }
 
-cws_handler_t cws_router_match(cws_router_t* router, cws_method_t method,
-                               const char* path, size_t path_len,
-                               cws_query_kv_t* params, size_t params_cap,
-                               size_t* params_count) {
-    if (!router || !path) return NULL;
-    *params_count = 0;
+int cws_router_mount(cws_router_t* router, const char* prefix,
+                    cws_router_t* sub_router) {
+    if (!router || !prefix || !sub_router) return CWS_ERR_INVALID;
     cws_route_node_t* cur = router->root;
-    size_t i = 0;
+    const char* p = prefix;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char* slash = strchr(p, '/');
+        size_t slen = slash ? (size_t)(slash - p) : strlen(p);
+        cws_route_node_t* child = NULL;
+        for (int i = 0; i < cur->children_count; i++) {
+            cws_route_node_t* c = &cur->children[i];
+            if ((c->is_param || c->is_wildcard)) {
+                if ((slen == 1 && p[0] == '*') || (slen >= 1 && p[0] == ':')) {
+                    if (c->segment_len == slen || (c->is_wildcard && slen == 1)) { child = c; break; }
+                }
+            }
+            if (!c->is_param && !c->is_wildcard &&
+                c->segment_len == slen && memcmp(c->segment, p, slen) == 0) { child = c; break; }
+        }
+        if (!child) {
+            child = node_add_child(cur, p, slen);
+            if (!child) return CWS_ERR_NOMEM;
+        }
+        cur = child;
+        p += slen;
+    }
+    cur->sub_router = sub_router;
+    return CWS_OK;
+}
+
+typedef struct {
+    cws_route_node_t* node;
+    size_t            consumed;
+    int                hit_leaf;
+} cws_match_state_t;
+
+static void match_node(cws_route_node_t* cur, const char* path, size_t path_len,
+                       size_t i, cws_query_kv_t* params, size_t params_cap,
+                       size_t* params_count, cws_match_state_t* win) {
     while (i < path_len) {
         while (i < path_len && path[i] == '/') i++;
         if (i >= path_len) break;
@@ -162,12 +205,69 @@ cws_handler_t cws_router_match(cws_router_t* router, cws_method_t method,
                 }
             }
         }
-        if (!next) return NULL;
+        if (!next) return;
         cur = next;
     }
-    if (cur->handler && (cur->method == method || cur->method == CWS_M_UNKNOWN)) {
-        return cur->handler;
+    win->node    = cur;
+    win->consumed = i;
+    win->hit_leaf = 1;
+}
+
+int cws_router_match_pipeline(cws_router_t* router, cws_method_t method,
+                              const char* path, size_t path_len,
+                              cws_query_kv_t* params, size_t params_cap,
+                              size_t* params_count,
+                              cws_pipeline_t* out) {
+    if (!router || !path || !out) return CWS_ERR_INVALID;
+    *params_count = 0;
+    memset(out, 0, sizeof(*out));
+
+    /* Root router global middleware always runs first. */
+    cws_route_node_t* root = router->root;
+    for (int k = 0; k < root->mws_count && out->count < CWS_MAX_PIPELINE; k++) {
+        out->mws[out->count++] = root->mws[k];
     }
+
+    cws_match_state_t win = {0};
+    match_node(router->root, path, path_len, 0, params, params_cap,
+               params_count, &win);
+    if (!win.hit_leaf) return CWS_ERR_NOTFOUND;
+
+    cws_route_node_t* cur = win.node;
+
+    /* Descend into sub-routers while remaining path has segments. */
+    while (cur && cur->sub_router && win.consumed < path_len) {
+        const char* rest = path + win.consumed;
+        size_t rest_len = path_len - win.consumed;
+        if (rest[0] == '/') { rest++; rest_len--; }
+        cws_route_node_t* sub_root = cur->sub_router->root;
+        for (int k = 0; k < sub_root->mws_count && out->count < CWS_MAX_PIPELINE; k++) {
+            out->mws[out->count++] = sub_root->mws[k];
+        }
+        cws_match_state_t sub_win = {0};
+        match_node(sub_root, rest, rest_len, 0,
+                   params, params_cap, params_count, &sub_win);
+        if (!sub_win.hit_leaf) return CWS_ERR_NOTFOUND;
+        cur = sub_win.node;
+        win.consumed += sub_win.consumed;
+        if (win.consumed > path_len) win.consumed = path_len;
+    }
+
+    if (cur && cur->handler && (cur->method == method || cur->method == CWS_M_UNKNOWN)) {
+        out->handler = cur->handler;
+        return CWS_OK;
+    }
+    return CWS_ERR_NOTFOUND;
+}
+
+cws_handler_t cws_router_match(cws_router_t* router, cws_method_t method,
+                               const char* path, size_t path_len,
+                               cws_query_kv_t* params, size_t params_cap,
+                               size_t* params_count) {
+    cws_pipeline_t p;
+    int rc = cws_router_match_pipeline(router, method, path, path_len,
+                                       params, params_cap, params_count, &p);
+    if (rc == CWS_OK) return p.handler;
     return NULL;
 }
 

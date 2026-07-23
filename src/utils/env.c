@@ -24,8 +24,8 @@ struct cws_env {
 
 static unsigned long env_hash(const char* s) {
     unsigned long h = 5381;
-    int c;
-    while ((c = (unsigned char)*s++)) h = ((h << 5) + h) + c;
+    unsigned char c;
+    while ((c = (unsigned char)*s++)) h = ((h << 5) + h) + (unsigned long)c;
     return h;
 }
 

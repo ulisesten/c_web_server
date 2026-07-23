@@ -23,11 +23,14 @@ set(CWS_SRC
     src/http/request.c
     src/http/response.c
     src/routing/router.c
+    src/routing/middleware.c
+    src/routing/middleware_builtins.c
     src/utils/errors.c
     src/utils/log.c
     src/utils/cpu.c
     src/utils/config.c
     src/utils/metrics.c
+    src/utils/env.c
 )
 
 add_library(cws STATIC ${CWS_SRC})

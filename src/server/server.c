@@ -5,6 +5,7 @@
 #include "cws/log.h"
 #include "cws/config.h"
 #include "cws/route.h"
+#include "cws/middleware.h"
 #include "cws/parser.h"
 #include "cws/response.h"
 #include "cws/metrics.h"
@@ -174,10 +175,12 @@ static int handle_recv(cws_worker_t* w, cws_conn_t* c) {
 
                 cws_query_kv_t params[16];
                 size_t params_count = 0;
-                cws_handler_t h = cws_router_match(srv->router, req.method,
-                                                   path_nul, pl,
-                                                   params, 16, &params_count);
-                if (h) {
+                cws_pipeline_t pipe;
+                int mrc = cws_router_match_pipeline(srv->router, req.method,
+                                                    path_nul, pl,
+                                                    params, 16, &params_count,
+                                                    &pipe);
+                if (mrc == CWS_OK && pipe.handler) {
                     for (size_t i = 0; i < params_count && i < 16; i++) {
                         req.path_params[i] = params[i];
                     }
@@ -185,7 +188,7 @@ static int handle_recv(cws_worker_t* w, cws_conn_t* c) {
                     cws_metrics_inc_requests(&srv->metrics, req.keep_alive);
                     cws_response_t res;
                     cws_response_init(&res, c->fd, req.keep_alive);
-                    h(&req, &res);
+                    cws_pipeline_run(&pipe, &req, &res);
                     int sc = res.status / 100;
                     if (sc >= 2 && sc <= 5) {
                         switch (sc) {

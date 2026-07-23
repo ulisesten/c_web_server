@@ -4,6 +4,8 @@
 #include "cws/errors.h"
 #include "cws/log.h"
 #include "cws/cpu.h"
+#include "cws/env.h"
+#include "cws/middleware.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +23,7 @@ struct cws_app {
     cws_cpu_topology_t topo;
     cws_router_t*      router;
     cws_server_t*      srv;
+    cws_env_t*         env;
     cws_static_map_t*  statics;
     int                topology_detected;
     int                log_inited;
@@ -34,7 +37,10 @@ cws_app_t* cws_app_new(void) {
     if (!app) return NULL;
     app->cfg = cws_config_default();
     app->router = cws_router_new();
-    if (!app->router) {
+    app->env = cws_env_new();
+    if (!app->router || !app->env) {
+        cws_router_free(app->router);
+        cws_env_free(app->env);
         free(app);
         return NULL;
     }
@@ -45,6 +51,7 @@ void cws_app_free(cws_app_t* app) {
     if (!app) return;
     if (app->srv)     cws_server_free(app->srv);
     if (app->router)  cws_router_free(app->router);
+    if (app->env)     cws_env_free(app->env);
     if (app->topology_detected) cws_cpu_topology_free(&app->topo);
     if (app->log_inited)        cws_log_shutdown();
     free(app);
@@ -108,6 +115,34 @@ cws_app_t* cws_app_tls(cws_app_t* app, const char* cert, const char* key) {
     if (!app) return NULL;
     if (cert) snprintf(app->cfg.tls_cert, sizeof(app->cfg.tls_cert), "%s", cert);
     if (key)  snprintf(app->cfg.tls_key,  sizeof(app->cfg.tls_key),  "%s", key);
+    return app;
+}
+
+int cws_app_env_file(cws_app_t* app, const char* path) {
+    if (!app || !path || !app->env) return CWS_ERR_INVALID;
+    return cws_env_load_file(app->env, path);
+}
+
+const char* cws_app_env_get(const cws_app_t* app, const char* key) {
+    return app ? cws_env_get(app->env, key) : NULL;
+}
+
+const char* cws_app_env_get_or(const cws_app_t* app, const char* key,
+                              const char* default_value) {
+    if (!app) return default_value;
+    return cws_env_get_or(app->env, key, default_value);
+}
+
+cws_app_t* cws_app_use(cws_app_t* app, cws_middleware_fn mw) {
+    if (app && mw) cws_router_use(app->router, mw);
+    return app;
+}
+
+cws_app_t* cws_app_mount(cws_app_t* app, const char* prefix,
+                        cws_router_t* sub_router) {
+    if (app && prefix && sub_router) {
+        cws_router_mount(app->router, prefix, sub_router);
+    }
     return app;
 }
 

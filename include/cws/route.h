@@ -3,8 +3,7 @@
 
 #include <stddef.h>
 
-#include "request.h"
-#include "response.h"
+#include <stddef.h>
 
 #include "request.h"
 #include "response.h"
@@ -42,18 +41,27 @@ int cws_router_add(cws_router_t* router, cws_method_t method,
                    const char* pattern, cws_handler_t handler);
 
 /*
- * Match a (method, path) pair against the router.
- * Returns the handler or NULL. Captures :param into the provided params
- * array (caller-provided, must have capacity for path segment count).
+ * Match a (method, path) against the router. Fills `out` pipeline with
+ * the per-router middleware stack (ordering: root router mws first, then
+ * sub-router mws) plus the matched handler. Captures :param into the
+ * provided params array. Returns CWS_OK on match, CWS_ERR_NOTFOUND if
+ * no route matched, or another error code on internal failure.
+ */
+int cws_router_match_pipeline(cws_router_t* router, cws_method_t method,
+                              const char* path, size_t path_len,
+                              cws_query_kv_t* params, size_t params_cap,
+                              size_t* params_count,
+                              cws_pipeline_t* out);
+
+/*
+ * Legacy: return the handler only (no middleware). Useful for tests and
+ * simple embedders. Returns NULL if no match.
  */
 cws_handler_t cws_router_match(cws_router_t* router, cws_method_t method,
                                const char* path, size_t path_len,
                                cws_query_kv_t* params, size_t params_cap,
                                size_t* params_count);
 
-/*
- * Walk all routes (for /metrics exposure and debugging).
- */
 size_t cws_router_size(const cws_router_t* router);
 
 #endif

@@ -9,6 +9,8 @@
 #include "config.h"
 #include "request.h"
 #include "response.h"
+#include "middleware.h"
+#include "env.h"
 
 /*
  * High-level ergonomic API for the CWS framework.
@@ -63,6 +65,30 @@ cws_app_t* cws_app_max_body(cws_app_t* app, size_t bytes);
 cws_app_t* cws_app_keepalive_ms(cws_app_t* app, uint32_t ms);
 cws_app_t* cws_app_backlog(cws_app_t* app, int n);
 cws_app_t* cws_app_tls(cws_app_t* app, const char* cert, const char* key);
+
+/*
+ * Load a .env file (KEY=VALUE format). Multiple calls append/override.
+ * Returns CWS_OK or CWS_ERR_IO.
+ */
+int  cws_app_env_file(cws_app_t* app, const char* path);
+
+/* Get a .env variable loaded via cws_app_env_file. Returns NULL if missing. */
+const char* cws_app_env_get(const cws_app_t* app, const char* key);
+const char* cws_app_env_get_or(const cws_app_t* app, const char* key,
+                              const char* default_value);
+
+/*
+ * Register a global middleware that runs before every route (Express-style
+ * `app.use(mw)`). Returns app for chaining. Stable order = registration order.
+ */
+cws_app_t* cws_app_use(cws_app_t* app, cws_middleware_fn mw);
+
+/*
+ * Mount a sub-router under a prefix (Express-style `app.use('/videos', router)`).
+ * The sub-router is owned by the caller; cws_app_free does NOT free it.
+ */
+cws_app_t* cws_app_mount(cws_app_t* app, const char* prefix,
+                        cws_router_t* sub_router);
 
 /* Access to underlying objects for advanced use */
 const cws_config_t*  cws_app_config(const cws_app_t* app);
