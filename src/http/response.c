@@ -130,36 +130,38 @@ static int writev_all(int fd, struct iovec* iov, int iovcnt) {
 }
 
 static int build_status_line(cws_response_t* res, size_t body_len, cws_mime_t mt, int include_body) {
-    char* p = res->header_buf + res->header_len;
-    size_t cap = sizeof(res->header_buf) - res->header_len;
+    char tmp[1024];
     int n;
     if (include_body) {
-        n = snprintf(p, cap,
+        n = snprintf(tmp, sizeof(tmp),
             "HTTP/1.1 %d %s\r\n"
             "Content-Type: %s\r\n"
             "Content-Length: %zu\r\n"
-            "Connection: %s\r\n"
-            "%s",
+            "Connection: %s\r\n",
             res->status,
             cws_status_string(res->status),
             cws_mime_string(mt),
             body_len,
-            res->keep_alive ? "keep-alive" : "close",
-            res->header_len ? "" : "");
+            res->keep_alive ? "keep-alive" : "close");
     } else {
-        n = snprintf(p, cap,
+        n = snprintf(tmp, sizeof(tmp),
             "HTTP/1.1 %d %s\r\n"
             "Content-Length: 0\r\n"
-            "Connection: %s\r\n"
-            "%s",
+            "Connection: %s\r\n",
             res->status,
             cws_status_string(res->status),
-            res->keep_alive ? "keep-alive" : "close",
-            res->header_len ? "" : "");
+            res->keep_alive ? "keep-alive" : "close");
     }
-    if (n < 0 || (size_t)n >= cap) return CWS_ERR_OVERFLOW;
-    res->header_len += (size_t)n;
-    if (sizeof(res->header_buf) - res->header_len < 2) return CWS_ERR_OVERFLOW;
+    if (n < 0 || (size_t)n >= sizeof(tmp)) return CWS_ERR_OVERFLOW;
+    size_t status_len = (size_t)n;
+
+    /* Middleware headers are already in header_buf[0..header_len).
+     * Shift them right to make room for the status line at the front. */
+    if (res->header_len + status_len + 2 > sizeof(res->header_buf))
+        return CWS_ERR_OVERFLOW;
+    memmove(res->header_buf + status_len, res->header_buf, res->header_len);
+    memcpy(res->header_buf, tmp, status_len);
+    res->header_len += status_len;
     res->header_buf[res->header_len++] = '\r';
     res->header_buf[res->header_len++] = '\n';
     return CWS_OK;
