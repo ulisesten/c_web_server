@@ -235,11 +235,25 @@ int cws_router_match_pipeline(cws_router_t* router, cws_method_t method,
 
     cws_route_node_t* cur = win.node;
 
-    /* Descend into sub-routers while remaining path has segments. */
-    while (cur && cur->sub_router && win.consumed < path_len) {
+    /* Descend into sub-routers while remaining path has segments or is
+     * empty (handles /videos/ -> sub-router route "/" ). */
+    while (cur && cur->sub_router) {
         const char* rest = path + win.consumed;
         size_t rest_len = path_len - win.consumed;
-        if (rest[0] == '/') { rest++; rest_len--; }
+        while (rest_len > 0 && rest[0] == '/') { rest++; rest_len--; }
+        if (rest_len == 0 && win.consumed >= path_len) {
+            /* Path fully consumed by prefix; sub-router must match "/". */
+            cws_route_node_t* sub_root = cur->sub_router->root;
+            for (int k = 0; k < sub_root->mws_count && out->count < CWS_MAX_PIPELINE; k++) {
+                out->mws[out->count++] = sub_root->mws[k];
+            }
+            if (sub_root->handler && (sub_root->method == method || sub_root->method == CWS_M_UNKNOWN)) {
+                out->handler = sub_root->handler;
+                return CWS_OK;
+            }
+            cur = sub_root;
+            break;
+        }
         cws_route_node_t* sub_root = cur->sub_router->root;
         for (int k = 0; k < sub_root->mws_count && out->count < CWS_MAX_PIPELINE; k++) {
             out->mws[out->count++] = sub_root->mws[k];
