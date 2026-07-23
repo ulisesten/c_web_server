@@ -207,6 +207,14 @@ static void match_node(cws_route_node_t* cur, const char* path, size_t path_len,
         }
         if (!next) return;
         cur = next;
+        /* Stop traversing if this node has a sub-router mounted; the
+         * remaining path will be matched by the sub-router. */
+        if (cur->sub_router) {
+            win->node    = cur;
+            win->consumed = i;
+            win->hit_leaf = 1;
+            return;
+        }
     }
     win->node    = cur;
     win->consumed = i;
