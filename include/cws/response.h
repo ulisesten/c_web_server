@@ -57,8 +57,50 @@ int  cws_response_header(cws_response_t* res, const char* name, const char* valu
 void cws_response_body(cws_response_t* res, const void* body, size_t len, cws_mime_t mime);
 void cws_response_body_owned(cws_response_t* res, void* body, size_t len, cws_mime_t mime);
 int  cws_response_send(cws_response_t* res);
+/**
+ * \brief Envía un archivo estático tal cual está en disco vía sendfile(2).
+ *
+ * Función de conveniencia que envía el archivo \p path con el Content-Type
+ * derivado de \p mime y sin headers adicionales. Para headers personalizados
+ * usá cws_response_sendfile_ex().
+ *
+ * \param[out] res  respuesta en construcción (se completa y envía al socket).
+ * \param[in]  path ruta del archivo en filesystem.
+ * \param[in]  mime Content-Type a anunciar en el encabezado.
+ * \return CWS_OK en éxito; CWS_ERR_IO si falla la escritura; o se envía 404/500
+ *         si el archivo no existe o no es un archivo regular.
+ */
 int  cws_response_sendfile(cws_response_t* res, const char* path, cws_mime_t mime);
 int  cws_response_send_error(cws_response_t* res, int status);
+
+/**
+ * \brief Envía un archivo estático permitiendo headers personalizados.
+ *
+ * Equivalente a express.static con un callback setHeaders: los headers
+ * (Content-Type, Cache-Control, etc.) que ya hayan sido agregados a \p res vía
+ * cws_response_header() se respetan; si no se agregó un "Content-Type", se usa
+ * \p default_content_type como fallback.
+ *
+ * Aguanta el status line, Content-Type (si aplica), Content-Length y
+ * Connection, preservando los headers ya presentes en header_buf.
+ *
+ * \param[out] res                 respuesta en construcción (se completa y
+ *                                 envía al socket).
+ * \param[in]  path                ruta del archivo a servir.
+ * \param[in]  default_content_type Content-Type por defecto que se usa
+ *                                 ÚNICAMENTE si el llamador no agregó ya un
+ *                                 header "Content-Type" (p. ej. vía un
+ *                                 callback set_headers). Puede ser NULL si no
+ *                                 se desea ningún default.
+ * \param[in]  content_length      tamaño del archivo si ya se conoce (ahorra
+ *                                 un fstat); pasar 0 para que se calcule
+ *                                 internamente vía fstat().
+ * \return CWS_OK en éxito; CWS_ERR_IO si falla la escritura; o se envía una
+ *         respuesta 404 si el archivo no existe o no es un archivo regular.
+ */
+int  cws_response_sendfile_ex(cws_response_t* res, const char* path,
+                              const char* default_content_type,
+                              size_t content_length);
 
 const char* cws_mime_string(cws_mime_t mt);
 const char* cws_status_string(int status);

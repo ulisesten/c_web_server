@@ -9,8 +9,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <signal.h>
 #include <stdio.h>
+#include <limits.h>
+#include <sys/stat.h>
 
 typedef struct cws_static_map {
     char*       fs_path;
@@ -198,6 +201,168 @@ cws_app_t* cws_app_static(cws_app_t* app, const char* url_path,
     b->fs_path  = strdup(fs_path);
     b->mime     = mime;
     return cws_app_route(app, CWS_M_GET, url_path, static_serve_handler);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Servidor estático de directorio (express.static-like)                      */
+/* ------------------------------------------------------------------------- */
+
+typedef struct cws_static_mount {
+    char*  prefix;
+    size_t prefix_len;
+    char*  dir;
+    char*  index;
+    void (*set_headers)(cws_response_t* res, const char* file_path, void* user);
+    void*  user;
+} cws_static_mount_t;
+
+static cws_static_mount_t* g_static_mounts  = NULL;
+static size_t              g_mount_count    = 0;
+static size_t              g_mount_cap      = 0;
+
+static char* strip_trailing_slash(const char* s) {
+    size_t n = strlen(s);
+    while (n > 1 && s[n - 1] == '/') n--;
+    char* out = (char*)malloc(n + 1);
+    if (!out) return NULL;
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return out;
+}
+
+/* Mime por defecto según extensión (usado si set_headers no define
+ * Content-Type). */
+static const char* static_mime_type(const char* p) {
+    const char* dot = strrchr(p, '.');
+    if (!dot) return "application/octet-stream";
+    if (!strcasecmp(dot, ".m3u8")) return "application/vnd.apple.mpegurl";
+    if (!strcasecmp(dot, ".ts")) return "video/mp2t";
+    if (!strcasecmp(dot, ".mp4")) return "video/mp4";
+    if (!strcasecmp(dot, ".html") || !strcasecmp(dot, ".htm")) return "text/html; charset=utf-8";
+    if (!strcasecmp(dot, ".css")) return "text/css; charset=utf-8";
+    if (!strcasecmp(dot, ".js")) return "application/javascript; charset=utf-8";
+    if (!strcasecmp(dot, ".json")) return "application/json; charset=utf-8";
+    if (!strcasecmp(dot, ".png")) return "image/png";
+    if (!strcasecmp(dot, ".jpg") || !strcasecmp(dot, ".jpeg")) return "image/jpeg";
+    if (!strcasecmp(dot, ".svg")) return "image/svg+xml";
+    if (!strcasecmp(dot, ".txt")) return "text/plain; charset=utf-8";
+    return "application/octet-stream";
+}
+
+/* Une dir + ruta URL relativa (de longitud rel_len, no NUL-terminada)
+ * evitando escapes de directorio (".."). */
+static int static_join(const char* dir, const char* rel, size_t rel_len,
+                       char* out, size_t outsz) {
+    if (snprintf(out, outsz, "%s", dir) >= (int)outsz) return CWS_ERR_OVERFLOW;
+    size_t p = 0;
+    while (p < rel_len) {
+        while (p < rel_len && rel[p] == '/') p++;
+        if (p >= rel_len) break;
+        const char* seg = rel + p;
+        while (p < rel_len && rel[p] != '/') p++;
+        size_t slen = (size_t)(rel + p - seg);
+        if (slen == 2 && seg[0] == '.' && seg[1] == '.') return CWS_ERR_INVALID;
+        if (slen == 1 && seg[0] == '.') continue;
+        size_t cur = strlen(out);
+        if (cur + 1 + slen + 1 >= outsz) return CWS_ERR_OVERFLOW;
+        out[cur++] = '/';
+        memcpy(out + cur, seg, slen);
+        out[cur + slen] = '\0';
+    }
+    return CWS_OK;
+}
+
+static void static_mount_handler(cws_request_t* req, cws_response_t* res) {
+    for (size_t i = 0; i < g_mount_count; i++) {
+        cws_static_mount_t* m = &g_static_mounts[i];
+        if (req->path_len < m->prefix_len) continue;
+        if (strncmp(req->path, m->prefix, m->prefix_len) != 0) continue;
+        size_t rem = req->path_len - m->prefix_len;
+        const char* after = req->path + m->prefix_len;
+        /* límite de segmentos: /hls/videos no debe matchear /hls/videosxyz */
+        if (rem > 0 && after[0] != '/') continue;
+        if (rem > 0 && after[0] == '/') { after++; rem--; }
+
+        char path[PATH_MAX];
+        if (static_join(m->dir, after, rem, path, sizeof(path)) != CWS_OK) {
+            cws_response_send_error(res, 404);
+            return;
+        }
+
+        struct stat st;
+        if (stat(path, &st) != 0) {
+            cws_response_send_error(res, 404);
+            return;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (!m->index) {
+                cws_response_send_error(res, 404);
+                return;
+            }
+            size_t len = strlen(path);
+            int nn = snprintf(path + len, sizeof(path) - len, "/%s", m->index);
+            if (nn < 0 || (size_t)nn >= sizeof(path) - len ||
+                stat(path, &st) != 0) {
+                cws_response_send_error(res, 404);
+                return;
+            }
+        }
+        if (!S_ISREG(st.st_mode)) {
+            cws_response_send_error(res, 404);
+            return;
+        }
+        size_t size = (size_t)st.st_size;
+
+        if (m->set_headers) m->set_headers(res, path, m->user);
+        cws_response_status(res, 200);
+        cws_response_sendfile_ex(res, path, static_mime_type(path), size);
+        return;
+    }
+    cws_response_send_error(res, 404);
+}
+
+cws_app_t* cws_app_static_mount(cws_app_t* app, const cws_static_options_t* opts) {
+    if (!app || !opts || !opts->prefix || !opts->dir) return app;
+    char* prefix = strip_trailing_slash(opts->prefix);
+    if (!prefix || !*prefix) {
+        free(prefix);
+        return app;
+    }
+    if (g_mount_count == g_mount_cap) {
+        size_t ncap = g_mount_cap ? g_mount_cap * 2 : 8;
+        cws_static_mount_t* arr = realloc(g_static_mounts, ncap * sizeof(*arr));
+        if (!arr) {
+            free(prefix);
+            return app;
+        }
+        g_static_mounts = arr;
+        g_mount_cap = ncap;
+    }
+    cws_static_mount_t* m = &g_static_mounts[g_mount_count++];
+    memset(m, 0, sizeof(*m));
+    m->prefix = prefix;
+    m->prefix_len = strlen(prefix);
+    m->dir = strdup(opts->dir);
+    m->index = opts->index ? strdup(opts->index) : strdup("index.html");
+    m->set_headers = opts->set_headers;
+    m->user = opts->user;
+    if (!m->dir || !m->index) {
+        free(m->prefix); free(m->dir); free(m->index);
+        m->dir = m->index = m->prefix = NULL;
+        g_mount_count--;
+        return app;
+    }
+
+    /* Rutas GET para la raíz del prefijo y para todo lo que cuelga de él. */
+    size_t wcap = strlen(prefix) + 3;
+    char* wild = (char*)malloc(wcap);
+    if (wild) {
+        snprintf(wild, wcap, "%s/*", prefix);
+        cws_app_route(app, CWS_M_GET, prefix, static_mount_handler);
+        cws_app_route(app, CWS_M_GET, wild, static_mount_handler);
+        free(wild);
+    }
+    return app;
 }
 
 void cws_app_on_ready(cws_app_t* app, cws_ready_cb cb, void* user) {

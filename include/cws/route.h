@@ -35,6 +35,11 @@ int  cws_router_mount(cws_router_t* router, const char* prefix,
  *   /files/STAR                       wildcard (suffix)
  *   /api/:version/users/:id          mixed
  *
+ * Wildcard de sufijo: un segmento "*" (o "STAR") al final del patrón
+ * (p. ej. "/hls/videos/STAR") hace match de TODO el path restante, sin
+ * limitarse a un único segmento. Es lo que se usa para montar servidores
+ * estáticos de directorio (ver cws_app_static_mount()).
+ *
  * Duplicate registrations replace the previous handler.
  */
 int cws_router_add(cws_router_t* router, cws_method_t method,

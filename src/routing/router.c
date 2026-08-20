@@ -109,19 +109,27 @@ int cws_router_add(cws_router_t* router, cws_method_t method,
         if (!*p) break;
         const char* slash = strchr(p, '/');
         size_t slen = slash ? (size_t)(slash - p) : strlen(p);
+        /* "STAR" como segmento es un comodín `/x/STAR` (sufijo). Se guarda
+         * como "*" para que node_add_child lo marque is_wildcard. */
+        const char* wseg = p;
+        size_t wslen = slen;
+        if (slen == 4 && memcmp(p, "STAR", 4) == 0) {
+            wseg = "*";
+            wslen = 1;
+        }
         cws_route_node_t* child = NULL;
         for (int i = 0; i < cur->children_count; i++) {
             cws_route_node_t* c = &cur->children[i];
             if ((c->is_param || c->is_wildcard)) {
-                if ((slen == 1 && p[0] == '*') || (slen >= 1 && p[0] == ':')) {
-                    if (c->segment_len == slen || (c->is_wildcard && slen == 1)) { child = c; break; }
+                if ((wslen == 1 && wseg[0] == '*') || (wslen >= 1 && wseg[0] == ':')) {
+                    if (c->segment_len == wslen || (c->is_wildcard && wslen == 1)) { child = c; break; }
                 }
             }
             if (!c->is_param && !c->is_wildcard &&
-                c->segment_len == slen && memcmp(c->segment, p, slen) == 0) { child = c; break; }
+                c->segment_len == wslen && memcmp(c->segment, wseg, wslen) == 0) { child = c; break; }
         }
         if (!child) {
-            child = node_add_child(cur, p, slen);
+            child = node_add_child(cur, wseg, wslen);
             if (!child) return CWS_ERR_NOMEM;
         }
         cur = child;
@@ -207,6 +215,11 @@ static void match_node(cws_route_node_t* cur, const char* path, size_t path_len,
         }
         if (!next) return;
         cur = next;
+        /* Un comodín ("*" / "STAR") consume todo el path restante. */
+        if (next->is_wildcard) {
+            i = path_len;
+            break;
+        }
         /* Stop traversing if this node has a sub-router mounted; the
          * remaining path will be matched by the sub-router. */
         if (cur->sub_router) {

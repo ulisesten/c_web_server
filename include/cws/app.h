@@ -111,6 +111,54 @@ cws_app_t* cws_app_route(cws_app_t* app, cws_method_t method,
 cws_app_t* cws_app_static(cws_app_t* app, const char* url_path,
                           const char* fs_path, cws_mime_t mime);
 
+/**
+ * \brief Opciones para montar un servidor estático de directorio.
+ *
+ * Estilo express.static: sirve el árbol de archivos de \ref cws_static_options.dir
+ * bajo el prefijo de URL \ref cws_static_options.prefix y permite configurar
+ * headers por archivo vía el callback \ref cws_static_options.set_headers.
+ */
+typedef struct cws_static_options {
+    const char* prefix;  /**< Prefijo de URL de montaje, p. ej. "/hls/videos".
+                              Debe comenzar con '/'. */
+    const char* dir;     /**< Raíz del filesystem que se sirve, p. ej.
+                              "public/hls/videos". Los archivos se resuelven
+                              concatenando este directorio con la ruta de la
+                              petición. */
+    const char* index;   /**< Archivo índice de directorio (default
+                              "index.html"); NULL para no servir índices
+                              (una petición a un directorio responde 404). */
+    void (*set_headers)(cws_response_t* res, const char* file_path,
+                        void* user); /**< Callback opcional que recibe la
+                              respuesta y el path absoluto del archivo
+                              resuelto, para agregar headers vía
+                              cws_response_header() (p. ej. Content-Type y
+                              Cache-Control según extensión). Puede ser NULL. */
+    void* user;          /**< Contexto arbitrario que se pasa tal cual al
+                              callback \ref cws_static_options.set_headers. */
+} cws_static_options_t;
+
+/**
+ * \brief Monta un servidor estático de directorio configurable.
+ *
+ * Equivalente a:
+ * \code
+ *   app.use(prefix, express.static(dir, { setHeaders(res, path) {...} }))
+ * \endcode
+ *
+ * Registra rutas GET para \p opts->prefix y para ${prefix}/STAR (sufijo
+ * wildcard), sirviendo los archivos de \p opts->dir. Protección anti
+ * traversal: no se resuelven segmentos "..". Si el archivo resuelto es un
+ * directorio, se sirve \p opts->index cuando esté definido.
+ *
+ * \param[in] app  instancia de la aplicación cws.
+ * \param[in] opts configuración del montaje: prefijo, directorio, índice y,
+ *                 opcionalmente, un callback set_headers.
+ * \return La propia instancia \p app para encadenar llamadas; si \p app o
+ *         \p opts son NULL (o faltan prefix/dir) devuelve \p app sin cambios.
+ */
+cws_app_t* cws_app_static_mount(cws_app_t* app, const cws_static_options_t* opts);
+
 /*
  * Blocks until SIGINT/SIGTERM (installs handlers automatically) or
  * cws_app_stop() is called from another thread. Returns the server exit

@@ -129,20 +129,31 @@ static int writev_all(int fd, struct iovec* iov, int iovcnt) {
     return CWS_OK;
 }
 
-static int build_status_line(cws_response_t* res, size_t body_len, cws_mime_t mt, int include_body) {
+static int build_status_line(cws_response_t* res, size_t body_len,
+                             const char* ct, int include_body) {
     char tmp[1024];
     int n;
     if (include_body) {
-        n = snprintf(tmp, sizeof(tmp),
-            "HTTP/1.1 %d %s\r\n"
-            "Content-Type: %s\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: %s\r\n",
-            res->status,
-            cws_status_string(res->status),
-            cws_mime_string(mt),
-            body_len,
-            res->keep_alive ? "keep-alive" : "close");
+        if (ct)
+            n = snprintf(tmp, sizeof(tmp),
+                "HTTP/1.1 %d %s\r\n"
+                "Content-Type: %s\r\n"
+                "Content-Length: %zu\r\n"
+                "Connection: %s\r\n",
+                res->status,
+                cws_status_string(res->status),
+                ct,
+                body_len,
+                res->keep_alive ? "keep-alive" : "close");
+        else
+            n = snprintf(tmp, sizeof(tmp),
+                "HTTP/1.1 %d %s\r\n"
+                "Content-Length: %zu\r\n"
+                "Connection: %s\r\n",
+                res->status,
+                cws_status_string(res->status),
+                body_len,
+                res->keep_alive ? "keep-alive" : "close");
     } else {
         n = snprintf(tmp, sizeof(tmp),
             "HTTP/1.1 %d %s\r\n"
@@ -167,12 +178,23 @@ static int build_status_line(cws_response_t* res, size_t body_len, cws_mime_t mt
     return CWS_OK;
 }
 
+/* ¿Ya hay un header con este nombre en header_buf? (case-insensitive). */
+static int response_has_header(const cws_response_t* res, const char* name) {
+    size_t nlen = strlen(name);
+    for (size_t i = 0; i + nlen + 1 <= res->header_len; i++) {
+        if (res->header_buf[i + nlen] == ':' &&
+            strncasecmp(res->header_buf + i, name, nlen) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 int cws_response_send(cws_response_t* res) {
     if (res->sent) return CWS_ERR_INVALID;
     int rc;
     if (res->body_ptr && res->body_len > 0) {
         size_t prev = res->header_len;
-        rc = build_status_line(res, res->body_len, res->body_mime, 1);
+        rc = build_status_line(res, res->body_len, cws_mime_string(res->body_mime), 1);
         if (rc != CWS_OK) {
             res->header_len = prev;
             return rc;
@@ -183,7 +205,7 @@ int cws_response_send(cws_response_t* res) {
         };
         rc = writev_all(res->client_fd, iov, 2);
     } else {
-        rc = build_status_line(res, 0, CWS_MT_UNKNOWN, 0);
+        rc = build_status_line(res, 0, NULL, 0);
         if (rc != CWS_OK) return rc;
         struct iovec iov[1] = {
             { .iov_base = res->header_buf, .iov_len = res->header_len },
@@ -199,6 +221,12 @@ int cws_response_send(cws_response_t* res) {
 }
 
 int cws_response_sendfile(cws_response_t* res, const char* path, cws_mime_t mt) {
+    return cws_response_sendfile_ex(res, path, cws_mime_string(mt), 0);
+}
+
+int cws_response_sendfile_ex(cws_response_t* res, const char* path,
+                             const char* default_content_type,
+                             size_t content_length) {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         cws_response_status(res, 404);
@@ -209,12 +237,23 @@ int cws_response_sendfile(cws_response_t* res, const char* path, cws_mime_t mt) 
     struct stat st;
     if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) {
         close(fd);
-        cws_response_status(res, 500);
-        return cws_response_send_error(res, 500);
+        return cws_response_send_error(res, 404);
     }
-    size_t body_len = (size_t)st.st_size;
-    int rc = build_status_line(res, body_len, mt, 1);
-    if (rc != CWS_OK) { close(fd); return rc; }
+    size_t body_len = content_length ? content_length : (size_t)st.st_size;
+
+    /* Si el llamador ya agregó un Content-Type (p. ej. vía set_headers) lo
+     * respetamos; si no, usamos el default. */
+    const char* ct = response_has_header(res, "Content-Type")
+                         ? NULL
+                         : default_content_type;
+
+    size_t prev = res->header_len;
+    int rc = build_status_line(res, body_len, ct, 1);
+    if (rc != CWS_OK) {
+        res->header_len = prev;
+        close(fd);
+        return rc;
+    }
 
     ssize_t hw = write(res->client_fd, res->header_buf, res->header_len);
     if (hw < 0 || (size_t)hw != res->header_len) {
