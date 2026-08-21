@@ -250,7 +250,7 @@ static const char* static_mime_type(const char* p) {
 }
 
 /* Une dir + ruta URL relativa (de longitud rel_len, no NUL-terminada)
- * evitando escapes de directorio (".."). */
+ * evitando escapes de directorio ("..") y dotfiles. */
 static int static_join(const char* dir, const char* rel, size_t rel_len,
                        char* out, size_t outsz) {
     if (snprintf(out, outsz, "%s", dir) >= (int)outsz) return CWS_ERR_OVERFLOW;
@@ -261,8 +261,8 @@ static int static_join(const char* dir, const char* rel, size_t rel_len,
         const char* seg = rel + p;
         while (p < rel_len && rel[p] != '/') p++;
         size_t slen = (size_t)(rel + p - seg);
-        if (slen == 2 && seg[0] == '.' && seg[1] == '.') return CWS_ERR_INVALID;
-        if (slen == 1 && seg[0] == '.') continue;
+        /* Bloquea "..", "." y cualquier dotfile ("." inicial). */
+        if (seg[0] == '.') return CWS_ERR_INVALID;
         size_t cur = strlen(out);
         if (cur + 1 + slen + 1 >= outsz) return CWS_ERR_OVERFLOW;
         out[cur++] = '/';
@@ -270,6 +270,31 @@ static int static_join(const char* dir, const char* rel, size_t rel_len,
         out[cur + slen] = '\0';
     }
     return CWS_OK;
+}
+
+/* ¿Está `sub` dentro de `root` (o es el propio root) sin salirse? */
+static int path_is_within(const char* sub, const char* root) {
+    size_t rl = strlen(root);
+    if (strncmp(sub, root, rl) != 0) return 0;
+    if (sub[rl] == '\0') return 1;
+    if (rl > 0 && root[rl - 1] == '/') return 1;
+    return sub[rl] == '/';
+}
+
+/* Resuelve `path` a su camino canónico (realpath, sigue symlinks) y verifica
+ * que quede dentro de la raíz `dir`. En éxito llena `out` con el camino
+ * canónico y devuelve 0; si escapa, no se puede resolver o es demasiado
+ * largo devuelve -1. */
+static int static_resolve(const char* dir, const char* path, char* out,
+                          size_t outsz) {
+    char root[PATH_MAX];
+    char resolved[PATH_MAX];
+    if (!realpath(dir, root)) return -1;
+    if (!realpath(path, resolved)) return -1;
+    if (!path_is_within(resolved, root)) return -1;
+    if (strlen(resolved) >= outsz) return -1;
+    strcpy(out, resolved);
+    return 0;
 }
 
 static void static_mount_handler(cws_request_t* req, cws_response_t* res) {
@@ -289,8 +314,15 @@ static void static_mount_handler(cws_request_t* req, cws_response_t* res) {
             return;
         }
 
+        /* Resolución canónica + contención (anti symlink-escape). */
+        char resolved[PATH_MAX];
+        if (static_resolve(m->dir, path, resolved, sizeof(resolved)) != 0) {
+            cws_response_send_error(res, 404);
+            return;
+        }
+
         struct stat st;
-        if (stat(path, &st) != 0) {
+        if (stat(resolved, &st) != 0) {
             cws_response_send_error(res, 404);
             return;
         }
@@ -299,13 +331,22 @@ static void static_mount_handler(cws_request_t* req, cws_response_t* res) {
                 cws_response_send_error(res, 404);
                 return;
             }
-            size_t len = strlen(path);
-            int nn = snprintf(path + len, sizeof(path) - len, "/%s", m->index);
-            if (nn < 0 || (size_t)nn >= sizeof(path) - len ||
-                stat(path, &st) != 0) {
+            size_t len = strlen(resolved);
+            int nn = snprintf(resolved + len, sizeof(resolved) - len, "/%s",
+                              m->index);
+            if (nn < 0 || (size_t)nn >= sizeof(resolved) - len) {
                 cws_response_send_error(res, 404);
                 return;
             }
+            /* Re-verificar contención para el índice (podría ser symlink). */
+            char index_resolved[PATH_MAX];
+            if (static_resolve(m->dir, resolved, index_resolved,
+                               sizeof(index_resolved)) != 0 ||
+                stat(index_resolved, &st) != 0) {
+                cws_response_send_error(res, 404);
+                return;
+            }
+            strcpy(resolved, index_resolved);
         }
         if (!S_ISREG(st.st_mode)) {
             cws_response_send_error(res, 404);
@@ -313,9 +354,9 @@ static void static_mount_handler(cws_request_t* req, cws_response_t* res) {
         }
         size_t size = (size_t)st.st_size;
 
-        if (m->set_headers) m->set_headers(res, path, m->user);
+        if (m->set_headers) m->set_headers(res, resolved, m->user);
         cws_response_status(res, 200);
-        cws_response_sendfile_ex(res, path, static_mime_type(path), size);
+        cws_response_sendfile_ex(res, resolved, static_mime_type(resolved), size);
         return;
     }
     cws_response_send_error(res, 404);
