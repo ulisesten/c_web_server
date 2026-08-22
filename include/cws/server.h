@@ -34,6 +34,12 @@ const cws_config_t*  cws_server_config(const cws_server_t* srv);
 /*
  * Start the acceptor + worker pool. Blocks until cws_server_stop() is
  * called (e.g., from signal handler) or fatal error.
+ *
+ * Limitaciones de transporte (keep-alive):
+ *   - HTTPS/HTTP/2 no implementados (solo HTTP/1.0 y 1.1).
+ *   - Body con Transfer-Encoding (chunked) se rechaza con 400.
+ *   - Peticiones pipelined dentro del mismo segmento TCP que una petición
+ *     ya procesada se descartan tras la respuesta (no se reencolan).
  */
 int cws_server_run(cws_server_t* srv, cws_ready_cb on_ready, void* user);
 

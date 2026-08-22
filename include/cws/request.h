@@ -32,6 +32,14 @@ typedef struct {
 /*
  * Request struct. Strings reference slices in a per-connection arena
  * (no per-request allocations on the hot path).
+ *
+ * ADVERTENCIA: con excepción de `method_str`, estos punteros NO están
+ * NUL-terminados: apuntan al buffer de la conexión y su longitud real está en
+ * los campos *_len (path_len, header.value_len, etc.). NO los trates con
+ * strlen/strcpy: usa memcpy con la longitud, o copia/acota antes. Mientras el
+ * tamaño del buffer esté acotado (CWS_RECV_BUF), leer con strlen no desborda
+ * la memoria pero recorre bytes posteriores del buffer. Los punteros son
+ * válidos solo durante el handler (se invalidan en la siguiente petición).
  */
 typedef struct {
     cws_method_t    method;
@@ -69,6 +77,13 @@ typedef struct {
 cws_method_t cws_method_from_str(const char* s, size_t len);
 const char*  cws_method_to_str(cws_method_t m);
 
+/*
+ * Devuelven el value/key de un header, query o path-param respectivamente.
+ * NUNCA NULL si no existe; el valor retornado NO está NUL-terminado — forma
+ * parte del buffer de la petición y su longitud está en el correspondiente
+ * cws_header_t/cws_query_kv_t. Usa memcpy + length, o copia a un buffer
+ * propio antes de pasar por funciones de string.
+ */
 const char*  cws_request_header(const cws_request_t* req, const char* name);
 const char*  cws_request_query(const cws_request_t* req, const char* key);
 const char*  cws_request_param(const cws_request_t* req, const char* name);

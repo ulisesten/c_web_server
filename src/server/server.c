@@ -29,6 +29,11 @@
 #define CWS_EPOLL_EVENTS 64
 #define CWS_RECV_BUF     8192
 
+/* Tope de conexiones por worker: el pool se indexa por fd y cada entrada
+ * lleva ~8 KB de buffer de recepción. Sin tope, OPEN_MAX (~1M) haría reservar
+ * varios GB virtuales por worker. Al superar el tope la conexión se cierra. */
+#define CWS_MAX_CONNS_PER_WORKER 4096
+
 typedef struct cws_conn {
     int           fd;
     cws_parser_t   parser;
@@ -376,11 +381,10 @@ static int server_start(cws_server_t* srv, cws_ready_cb on_ready, void* user) {
         return CWS_ERR_SOCKET;
     }
 
-    int max_fd = 65536;
+    int pool_cap = CWS_MAX_CONNS_PER_WORKER;
     long sc = sysconf(_SC_OPEN_MAX);
-    if (sc > 0) max_fd = (int)sc;
-    if (max_fd < 1024) max_fd = 1024;
-    int pool_cap = max_fd;
+    if (sc > 0 && sc < pool_cap) pool_cap = (int)sc;
+    if (pool_cap < 1024) pool_cap = 1024;
 
     srv->workers = calloc((size_t)srv->n_workers, sizeof(cws_worker_t));
     if (!srv->workers) { on_ready(srv, CWS_ERR_NOMEM, user); return CWS_ERR_NOMEM; }

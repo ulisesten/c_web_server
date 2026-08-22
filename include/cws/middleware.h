@@ -54,6 +54,12 @@ int cws_pipeline_init(cws_pipeline_t* p, const cws_middleware_fn* mws,
  * The continuation mechanism is implemented here: each middleware receives
  * a closure that, when invoked, advances the chain. Closures are stored on
  * the stack so no allocation is needed per request.
+ *
+ * IMPORTANTE (contrato síncrono): el middleware DEBE llamar a `next(req,res)`
+ * (o enviar respuesta) ANTES de retornar. El closure vive en el stack del
+ * ejecutor; invocar `next` de forma asíncrona (en otro hilo/timer/callback
+ * después de retornar la función) es uso inválido: el puntero quedaría
+ * colgando y el comportamiento es indefinido.
  */
 void cws_pipeline_run(const cws_pipeline_t* p, cws_request_t* req,
                       cws_response_t* res);
