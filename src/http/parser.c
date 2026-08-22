@@ -49,7 +49,10 @@ static int commit_headers(cws_parser_t* p) {
         p->body_target = (size_t)v;
     }
     const char* te = cws_request_header(&p->request, "transfer-encoding");
-    if (te && strcasecmp(te, "chunked") == 0) p->chunked = 1;
+    /* No se implementan bodies con Transfer-Encoding (chunked); aceptarlos
+     * dejaría el body sin consumir (ambiguo con Content-Length → riesgo de
+     * request smuggling). Se rechaza con 400. */
+    if (te) return CWS_ERR_PROTOCOL;
 
     return CWS_OK;
 }
@@ -75,8 +78,8 @@ int cws_parser_feed(cws_parser_t* p, const char* buf, size_t len,
                     return CWS_OK;
                 }
                 size_t ml = (size_t)(sp - start);
-                if (ml == 0 || ml > 16) { p->state = CWS_PARSER_ERROR; return CWS_ERR_PROTOCOL; }
-                char tmp[16];
+                char tmp[17];
+                if (ml == 0 || ml >= sizeof(tmp)) { p->state = CWS_PARSER_ERROR; return CWS_ERR_PROTOCOL; }
                 memcpy(tmp, start, ml);
                 tmp[ml] = '\0';
                 p->request.method = cws_method_from_str(tmp, ml);
