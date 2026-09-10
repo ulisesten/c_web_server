@@ -41,7 +41,7 @@ typedef struct {
     int       status;
     int       client_fd;
     int       keep_alive;
-    char      header_buf[2048];
+    char      header_buf[8192];   /* suficientes para auth con cookies grandes */
     size_t    header_len;
     size_t    body_len;
     const void* body_ptr;
